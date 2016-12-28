@@ -1,44 +1,22 @@
+import time
+import datetime
+from django.core.signing import TimestampSigner, BadSignature
+from django.utils import baseconv
 
-from django.conf import settings
+class SignatureTooFresh(BadSignature):
+    pass
 
-try:
-    from Crypto.Cipher import AES
-except ImportError:
-    if not settings.DEBUG:
-        raise
-    AES = None
-
-if AES:
-    import binascii
-
-    _AES_KEY = settings.SECRET_KEY[:AES.block_size]
-    _AES_IV = settings.SECRET_KEY[-AES.block_size:]
-
-    def _get_cipher():
-        return AES.new(_AES_KEY, AES.MODE_CBC, _AES_IV)
-
-    def encode_ts(ts):
-        if not isinstance(ts, str):
-            ts = str(ts)
-        return binascii.b2a_hex(
-            _get_cipher().encrypt(
-                ts + (' ' * (AES.block_size - (len(ts) % AES.block_size)))
-            )
-        )
-
-    def decode_ts(data):
-        try:
-            return float(_get_cipher().decrypt(bytes.fromhex(data)).decode())
-        except Exception:
-            return None
-else:
-    def encode_ts(ts):
-        if not isinstance(ts, str):
-            ts = str(ts)
-        return ts
-
-    def decode_ts(data):
-        try:
-            return float(data)
-        except Exception:
-            return None
+class ReversedTimestampSigner(TimestampSigner):
+    def unsign(self, value, min_age=None):
+        result = super(TimestampSigner, self).unsign(value)
+        value, timestamp = result.rsplit(self.sep, 1)
+        timestamp = baseconv.base62.decode(timestamp)
+        if min_age is not None:
+            if isinstance(min_age, datetime.timedelta):
+                min_age = min_age.total_seconds()
+            # Check timestamp is not older than min_age
+            age = time.time() - timestamp
+            if age < min_age:
+                raise SignatureTooFresh(
+                    'Signature age %s < %s seconds' % (age, min_age))
+        return value

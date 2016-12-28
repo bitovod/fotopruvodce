@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 import time
 
 from django.conf import settings
@@ -8,27 +8,26 @@ from django.contrib.auth.models import User
 from django.db import IntegrityError
 from django.shortcuts import render, redirect
 
-from fotopruvodce.registration.crypt import encode_ts, decode_ts
+from fotopruvodce.registration.crypt import ReversedTimestampSigner, SignatureTooFresh
 from fotopruvodce.registration.forms import Register
 
 
 def registration(request):
-    ts = time.time()
-    ts_encrypted = encode_ts(ts)
+    signer = ReversedTimestampSigner()
 
     if request.method == 'POST':
         form = Register(request.POST.copy())
 
         if form.is_valid():
-            ts_form = decode_ts(form.cleaned_data['ts'])
-            if (
-                form.cleaned_data['url'] or
-                ts_form is None or
-                (ts - ts_form) < settings.ANTIBOT_MIN_TIME
-            ):
-                messages.add_message(
-                    request, messages.WARNING,
-                    'Účet nebyl založen z důvodu podezření na spam')
+            try:
+                signer.unsign(form.cleaned_data['signature'],
+                              min_age=settings.ANTIBOT_MIN_TIME)
+                antibot_pass = True
+            except (KeyError, SignatureTooFresh):
+                antibot_pass = False
+            if form.cleaned_data['url'] or not antibot_pass:
+                messages.warning(request,
+                         'Účet nebyl založen z důvodu podezření na spam')
                 return redirect('homepage')
 
             try:
@@ -37,22 +36,18 @@ def registration(request):
                     email=form.cleaned_data['email'],
                     password=form.cleaned_data['password1'],
                 )
+                login(request, user,
+                      backend='django.contrib.auth.backends.ModelBackend')
+                messages.success(request, 'Účet byl úspěšně založen')
+                return redirect('homepage')
             except IntegrityError:
                 form.add_error('username', 'Uživatel již existuje')
-            else:
-                login(
-                    request, user,
-                    backend='django.contrib.auth.backends.ModelBackend')
+            form.cleaned_data['signature'] = signer.sign('fotopruvodce')
 
-                messages.add_message(
-                    request, messages.SUCCESS, 'Účet byl úspěšně založen')
-                return redirect('homepage')
-
-            form.cleaned_data['ts'] = ts_encrypted
         else:
-            form.data['ts'] = ts_encrypted
+            form.data['signature'] = signer.sign('fotopruvodce')
     else:
-        form = Register(initial={'ts': ts_encrypted})
+        form = Register(initial={'signature': signer.sign('fotopruvodce')})
 
     context = {
         'form': form,
